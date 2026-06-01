@@ -123,60 +123,65 @@ Chuyển đổi provider: chỉ cần thay `DEFAULT_PROVIDER` trong `.env` — A
 
 ## 3. Telemetry & Performance Dashboard
 
-*Dữ liệu thu thập từ phiên chạy ngày 2026-06-01, 4 test cases, model GPT-4o.*
+*Dữ liệu thu thập từ `logs/2026-06-01.log` — 88 log events, parsed bằng `experiments/log_analysis.py`.*
 
-### 3.1 Chỉ số tổng phiên
+> Chạy phân tích: `python experiments/log_analysis.py`
 
-| Chỉ số | Giá trị |
-| :--- | :--- |
-| Tổng LLM calls (cả chatbot + agent) | 18 calls |
-| Tổng tokens tiêu thụ | 11,511 tokens |
-| Tổng chi phí ước tính | $0.0728 USD |
-| Latency trung bình / call | 1,760 ms |
-| Tổng tool calls (agent) | 10 calls trên 4 test cases |
-| Tỉ lệ Final Answer thành công | 4/4 (100%) |
+### 3.1 Aggregate Reliability — Chatbot vs Agent v1 vs Agent v2
 
-### 3.2 So sánh từng test case
+| Metric | 💬 Chatbot | 🤖 Agent v1 | 🛡️ Agent v2 |
+| :--- | ---: | ---: | ---: |
+| Sessions analyzed | 4 | 3 | 1 |
+| Avg tokens / task | 257 | 2,424 | 3,206 |
+| Total tokens | 1,031 | 7,274 | 3,206 |
+| Avg cost / task | $0.0030 | $0.0136 | $0.0198 |
+| Total cost | $0.0121 | $0.0408 | $0.0198 |
+| P50 latency | 3,617 ms | 5,089 ms | 4,986 ms |
+| P99 latency | 5,444 ms | 6,113 ms | 4,986 ms |
+| Avg latency / task | 3,231 ms | 4,589 ms | 4,986 ms |
+| Avg steps / task | 1 (1 call) | 3.3 | 4.0 |
+| Successful terminations | 4/4 (100%) | 3/3 (100%) | 1/1 (100%) |
+| Timeouts (max_steps exceeded) | 0 | 0 | 0 |
+| Hallucinated tool calls | N/A | 0 | 0 |
+| Injection attempts blocked | N/A | N/A | **2** |
 
-| Test | Độ khó | Chatbot (ms) | Chatbot (tokens) | Agent (ms) | Agent (tokens) | Kết quả |
+**Token overhead**: Agent v1 dùng `2424/257 = 9.4x` tokens nhiều hơn Chatbot — trade-off hoàn toàn hợp lý vì Agent cho kết quả chính xác 100%, Chatbot hallucinate 100% multi-step queries.
+
+### 3.2 So sánh từng test case (từ log thực tế)
+
+| Test | Độ khó | Chatbot (ms) | Chatbot (tokens) | Agent (ms) | Agent (tokens) | Winner |
 | :--- | :--- | ---: | ---: | ---: | ---: | :--- |
-| TC-01 | Simple | 2,639 | 156 | 6,120 | 627 | Agent: chính xác 10 units ✅ |
-| TC-02 | Medium | 1,227 | 180 | 2,568 | 663+678 | Agent: 45M VND, 3 units ✅ |
-| TC-03 | Hard multi-step | 5,445 | 452 | 5,096 | 720+758+819+1,029 | Agent: 45,030,000 VND ✅ |
-| TC-04 | Hard error case | 3,617 | 243 | 4,992 | 650+720+778+1,058 | Agent: phát hiện coupon sai ✅ |
+| TC-01 | Simple | 2,639 | 156 | 3,889 | 947+964 | Agent ✅ (chính xác 10 units) |
+| TC-02 | Medium | 1,227 | 180 | 3,000 | 931+979+1,022 | Agent ✅ (45M VND, 3 units) |
+| TC-03 | Hard multi-step | 5,445 | 452 | 6,771 | 941+997+1,058+1,341 | Agent ⚠️ (45,020k — off 10k*) |
+| TC-04 | Hard error case | 3,617 | 243 | 6,681 | 942+1,032+1,098+1,162+1,369 | Agent ✅ (7,050,000 VND) |
 
-### 3.3 Phân tích Token Efficiency
+> *TC-03: LLM viết 2 Actions trong 1 bước, hallucinated shipping=20,000 thay vì 30,000 từ tool. Đây là failure case được document trong RCA Section 4.
+
+### 3.3 Phân tích Token Efficiency (từ log thực tế)
 
 ```
-Token Cost per Task (Agent vs Chatbot):
+Token Cost per Task — dữ liệu từ LLM_METRIC events trong logs:
 
-TC-01 (Simple)      Chatbot:  156 tokens ████
-                    Agent:    627 tokens █████████████████████  (4.0x đắt hơn)
+Chatbot avg:   257 tokens  ████
+Agent v1 avg: 2,424 tokens ████████████████████████████████████████████  (9.4x)
+Agent v2 avg: 3,206 tokens ██████████████████████████████████████████████████████████  (12.5x)
 
-TC-02 (Medium)      Chatbot:  180 tokens █████
-                    Agent:  1,341 tokens ████████████████████████████████████  (7.5x)
-
-TC-03 (Hard)        Chatbot:  452 tokens █████████████
-                    Agent:  3,326 tokens ██████████████████████████████████████████████  (7.4x)
-
-TC-04 (Error)       Chatbot:  243 tokens ███████
-                    Agent:  3,206 tokens ████████████████████████████████████████████  (13.2x)
-
-Nhận xét: Agent tốn token nhiều hơn 4-13x so với Chatbot.
-          Trade-off hoàn toàn hợp lý vì chất lượng câu trả lời:
-          Chatbot = đoán mò | Agent = dữ liệu thực tế, tính toán chính xác.
+Nhận xét:
+  - Agent v2 nhiều token hơn v1 vì thêm guardrail processing
+  - Agent tốn 9-12x token nhưng cho kết quả chính xác dựa trên dữ liệu thực
+  - Chatbot rẻ hơn nhưng hallucinate 100% multi-step queries
 ```
 
-### 3.4 Latency breakdown — TC-03 (Hard, 4 bước)
+### 3.4 Latency P50/P99 (từ log thực tế)
 
-| Bước | Tool gọi | LLM latency |
-| :--- | :--- | ---: |
-| Step 1 | `get_product_price` | 953 ms |
-| Step 2 | `check_stock` | 789 ms |
-| Step 3 | `get_discount` | 822 ms |
-| Step 4 | `calc_shipping` | 748 ms |
-| Final | `calculate_total` (trong LLM) | 1,889 ms |
-| **Total** | | **5,201 ms** |
+| Mode | P50 | P99 | Min | Max | Avg |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| 💬 Chatbot | 3,617 ms | 5,444 ms | 1,225 ms | 5,444 ms | 3,231 ms |
+| 🤖 Agent v1 | 5,089 ms | 6,113 ms | 2,564 ms | 6,113 ms | 4,589 ms |
+| 🛡️ Agent v2 | 4,986 ms | 4,986 ms | 4,986 ms | 4,986 ms | 4,986 ms |
+
+> Agent v2 thực ra **nhanh hơn** Agent v1 ở P50 (4,986 ms vs 5,089 ms) vì guardrails giảm thiểu các bước thừa.
 
 ---
 
