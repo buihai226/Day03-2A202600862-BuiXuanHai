@@ -1,6 +1,6 @@
 .env
-logs/
+# logs/
 __pycache__/
-*.log
+# *.log
 .DS_Store
 models/
